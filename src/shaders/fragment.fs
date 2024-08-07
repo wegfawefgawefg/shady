@@ -20,5 +20,5 @@ void main()
     vec2 nc = gl_FragCoord.xy / screenDims;
     nc.y = 1.0 - nc.y;  // Flip y-coordinate
     
-    finalColor = vec4(nc.x, nc.y, 0.0, 1.0);
+    finalColor = vec4(nc.x, nc.y - 0.5, 0.0, 1.0);
 }
