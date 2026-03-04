@@ -16,7 +16,7 @@ fn main() {
         SetTraceLogLevel(TraceLogLevel::LOG_WARNING as i32);
     }
     // let window_dims = UVec2::new(1280, 720);
-    let window_dims = UVec2::new(500, 500);
+    let window_dims = UVec2::new(900, 900);
     let fullscreen = false;
     rl.set_window_size(window_dims.x as i32, window_dims.y as i32);
     if fullscreen {
