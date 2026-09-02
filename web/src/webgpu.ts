@@ -1,6 +1,11 @@
 import { makeNoisePixels, noiseTextureSize } from "./noise";
+import presentShader from "./present.wgsl?raw";
 import { parseSize, type ChannelSetting, type ProjectFile, type ProjectSettings } from "./project";
+import type { BrowserInputState, ChannelRuntimeSource } from "./runtime-types";
 import { composeShader, projectFileSource } from "./shader";
+import { uniformByteSize, writeUniforms } from "./uniforms";
+
+export type { BrowserInputState, ChannelRuntimeSource } from "./runtime-types";
 
 export type GpuContext = {
   device: GPUDevice;
@@ -41,39 +46,6 @@ type BufferPassState = {
 
 type PendingBufferPassState = Omit<BufferPassState, "bindGroups">;
 
-export type ChannelRuntimeSource = {
-  audio?: {
-    analyser: AnalyserNode;
-    duration?: number;
-    timeData: Uint8Array<ArrayBuffer>;
-    frequencyData: Uint8Array<ArrayBuffer>;
-    pixels: Uint8Array<ArrayBuffer>;
-    startedAt?: number;
-    width: number;
-    height: number;
-  };
-  video?: HTMLVideoElement;
-  mirrorCanvas?: HTMLCanvasElement;
-  mirrorContext?: CanvasRenderingContext2D;
-  mirrored?: boolean;
-};
-
-export type BrowserInputState = {
-  mouseX: number;
-  mouseY: number;
-  mouseDown: number;
-  mouseClickX: number;
-  mouseClickY: number;
-  mouseButtons: number[];
-  mouseWheelX: number;
-  mouseWheelY: number;
-  keys: number[];
-  gamepadButtons: number[];
-  gamepadAxes: number[];
-};
-
-const lastFrameTimes = new WeakMap<GPUBuffer, number>();
-
 export function configureCanvas(context: Pick<GpuContext, "canvasContext" | "device" | "format">): void {
   context.canvasContext.configure({
     device: context.device,
@@ -81,49 +53,6 @@ export function configureCanvas(context: Pick<GpuContext, "canvasContext" | "dev
     alphaMode: "opaque"
   });
 }
-
-const renderShader = `
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(1.0, 1.0)
-    );
-    var uvs = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0)
-    );
-    var out: VertexOut;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.uv = uvs[vertex_index];
-    return out;
-}
-
-@group(0) @binding(0) var image_sampler: sampler;
-@group(0) @binding(1) var image_texture: texture_2d<f32>;
-
-@fragment
-fn fs(in: VertexOut) -> @location(0) vec4<f32> {
-    return textureSample(image_texture, image_sampler, in.uv);
-}
-`;
-
-const uniformChannelOffset = 16;
-const uniformFloatCount = uniformChannelOffset + 16 + 512 + 8 + 4 + 32 + 16;
-const uniformByteSize = uniformFloatCount * 4;
 
 export async function initWebGpu(canvas: HTMLCanvasElement): Promise<GpuContext> {
   if (!navigator.gpu) {
@@ -187,7 +116,7 @@ export async function initWebGpu(canvas: HTMLCanvasElement): Promise<GpuContext>
   });
   const computePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [computeBindGroupLayout] });
 
-  const renderModule = device.createShaderModule({ code: renderShader });
+  const renderModule = device.createShaderModule({ code: presentShader });
   const renderPipeline = device.createRenderPipeline({
     layout: "auto",
     vertex: { module: renderModule, entryPoint: "vs" },
@@ -233,76 +162,6 @@ function makeNoiseTexture(device: GPUDevice, seed: string): GPUTexture {
     { width: noiseTextureSize, height: noiseTextureSize }
   );
   return texture;
-}
-
-function writeUniforms(
-  device: GPUDevice,
-  buffer: GPUBuffer,
-  settings: ProjectSettings,
-  frame: number,
-  start: number,
-  channelSources: ReadonlyMap<number, ChannelRuntimeSource>,
-  inputState?: BrowserInputState
-): void {
-  const size = parseSize(settings.size);
-  const values = new Float32Array(uniformFloatCount);
-  const now = performance.now() / 1000;
-  const previous = lastFrameTimes.get(buffer) ?? now - 1 / 60;
-  lastFrameTimes.set(buffer, now);
-  const date = new Date();
-  values[0] = now - start;
-  values[1] = Math.max(0, now - previous);
-  values[2] = frame;
-  values[3] = size.width;
-  values[4] = size.height;
-  values[5] = inputState?.mouseX ?? 0;
-  values[6] = inputState?.mouseY ?? 0;
-  values[7] = inputState?.mouseDown ?? 0;
-  values[8] = inputState?.mouseClickX ?? 0;
-  values[9] = inputState?.mouseClickY ?? 0;
-  values[10] = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds() + date.getMilliseconds() / 1000;
-  values[11] = date.getFullYear();
-  values[12] = date.getMonth() + 1;
-  values[13] = date.getDate();
-  for (let channel = 0; channel < 4; ++channel) {
-    const metadata = settings.channels[channel] ?? { width: 1, height: 1 };
-    const source = channelSources.get(channel);
-    const buffer = settings.buffers?.[channel];
-    const offset = uniformChannelOffset + channel * 4;
-    values[offset] = buffer ? size.width : metadata.width || 1;
-    values[offset + 1] = buffer ? size.height : metadata.height || 1;
-    values[offset + 2] =
-      metadata.kind === "video" && source?.video
-        ? source.video.currentTime
-        : metadata.kind === "audio" && source?.audio?.startedAt !== undefined
-          ? source.audio.duration
-            ? (now - source.audio.startedAt) % source.audio.duration
-            : now - source.audio.startedAt
-          : metadata.kind === "webcam" || metadata.kind === "microphone"
-          ? now - start
-          : 0;
-    values[offset + 3] = metadata.sampleRate ?? 0;
-  }
-  const keyOffset = uniformChannelOffset + 16;
-  for (let index = 0; index < Math.min(512, inputState?.keys.length ?? 0); ++index) {
-    values[keyOffset + index] = inputState?.keys[index] ?? 0;
-  }
-  const mouseButtonOffset = uniformChannelOffset + 16 + 512;
-  for (let index = 0; index < Math.min(8, inputState?.mouseButtons.length ?? 0); ++index) {
-    values[mouseButtonOffset + index] = inputState?.mouseButtons[index] ?? 0;
-  }
-  const mouseWheelOffset = mouseButtonOffset + 8;
-  values[mouseWheelOffset] = inputState?.mouseWheelX ?? 0;
-  values[mouseWheelOffset + 1] = inputState?.mouseWheelY ?? 0;
-  const gamepadButtonOffset = mouseWheelOffset + 4;
-  for (let index = 0; index < Math.min(32, inputState?.gamepadButtons.length ?? 0); ++index) {
-    values[gamepadButtonOffset + index] = inputState?.gamepadButtons[index] ?? 0;
-  }
-  const gamepadAxisOffset = gamepadButtonOffset + 32;
-  for (let index = 0; index < Math.min(16, inputState?.gamepadAxes.length ?? 0); ++index) {
-    values[gamepadAxisOffset + index] = inputState?.gamepadAxes[index] ?? 0;
-  }
-  device.queue.writeBuffer(buffer, 0, values);
 }
 
 async function loadImageBitmap(src: string): Promise<ImageBitmap> {

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   native:
@@ -13,7 +14,7 @@ jobs:
       - run: cmake --preset dev
       - run: cmake --build --preset dev --parallel 2
       - run: ctest --test-dir build-shady --output-on-failure
-      - run: ./build-shady/shady-frame examples/pills/frosted_glass.wgsl --size 64x40 --time 1 --output /tmp/pills.ppm
+      - run: ./scripts/validate-examples.sh
 
   browser:
     runs-on: ubuntu-latest
