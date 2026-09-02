@@ -1,5 +1,6 @@
 import { makeNoisePixels, noiseTextureSize } from "./noise";
-import { parseSize, type ChannelSetting, type ProjectSettings } from "./project";
+import { parseSize, type ChannelSetting, type ProjectFile, type ProjectSettings } from "./project";
+import { composeShader, projectFileSource } from "./shader";
 
 export type GpuContext = {
   device: GPUDevice;
@@ -66,7 +67,12 @@ export type BrowserInputState = {
   mouseButtons: number[];
   mouseWheelX: number;
   mouseWheelY: number;
+  keys: number[];
+  gamepadButtons: number[];
+  gamepadAxes: number[];
 };
+
+const lastFrameTimes = new WeakMap<GPUBuffer, number>();
 
 export function configureCanvas(context: Pick<GpuContext, "canvasContext" | "device" | "format">): void {
   context.canvasContext.configure({
@@ -241,24 +247,30 @@ function writeUniforms(
   const size = parseSize(settings.size);
   const values = new Float32Array(uniformFloatCount);
   const now = performance.now() / 1000;
+  const previous = lastFrameTimes.get(buffer) ?? now - 1 / 60;
+  lastFrameTimes.set(buffer, now);
+  const date = new Date();
   values[0] = now - start;
-  values[1] = 1 / 60;
+  values[1] = Math.max(0, now - previous);
   values[2] = frame;
   values[3] = size.width;
   values[4] = size.height;
-  values[5] = inputState?.mouseDown ? inputState.mouseX : 0;
-  values[6] = inputState?.mouseDown ? inputState.mouseY : 0;
+  values[5] = inputState?.mouseX ?? 0;
+  values[6] = inputState?.mouseY ?? 0;
   values[7] = inputState?.mouseDown ?? 0;
   values[8] = inputState?.mouseClickX ?? 0;
   values[9] = inputState?.mouseClickY ?? 0;
-  values[13] = 1;
+  values[10] = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds() + date.getMilliseconds() / 1000;
+  values[11] = date.getFullYear();
+  values[12] = date.getMonth() + 1;
+  values[13] = date.getDate();
   for (let channel = 0; channel < 4; ++channel) {
     const metadata = settings.channels[channel] ?? { width: 1, height: 1 };
     const source = channelSources.get(channel);
     const buffer = settings.buffers?.[channel];
     const offset = uniformChannelOffset + channel * 4;
-    values[offset] = buffer?.wgsl ? size.width : metadata.width || 1;
-    values[offset + 1] = buffer?.wgsl ? size.height : metadata.height || 1;
+    values[offset] = buffer ? size.width : metadata.width || 1;
+    values[offset + 1] = buffer ? size.height : metadata.height || 1;
     values[offset + 2] =
       metadata.kind === "video" && source?.video
         ? source.video.currentTime
@@ -271,6 +283,10 @@ function writeUniforms(
           : 0;
     values[offset + 3] = metadata.sampleRate ?? 0;
   }
+  const keyOffset = uniformChannelOffset + 16;
+  for (let index = 0; index < Math.min(512, inputState?.keys.length ?? 0); ++index) {
+    values[keyOffset + index] = inputState?.keys[index] ?? 0;
+  }
   const mouseButtonOffset = uniformChannelOffset + 16 + 512;
   for (let index = 0; index < Math.min(8, inputState?.mouseButtons.length ?? 0); ++index) {
     values[mouseButtonOffset + index] = inputState?.mouseButtons[index] ?? 0;
@@ -278,6 +294,14 @@ function writeUniforms(
   const mouseWheelOffset = mouseButtonOffset + 8;
   values[mouseWheelOffset] = inputState?.mouseWheelX ?? 0;
   values[mouseWheelOffset + 1] = inputState?.mouseWheelY ?? 0;
+  const gamepadButtonOffset = mouseWheelOffset + 4;
+  for (let index = 0; index < Math.min(32, inputState?.gamepadButtons.length ?? 0); ++index) {
+    values[gamepadButtonOffset + index] = inputState?.gamepadButtons[index] ?? 0;
+  }
+  const gamepadAxisOffset = gamepadButtonOffset + 32;
+  for (let index = 0; index < Math.min(16, inputState?.gamepadAxes.length ?? 0); ++index) {
+    values[gamepadAxisOffset + index] = inputState?.gamepadAxes[index] ?? 0;
+  }
   device.queue.writeBuffer(buffer, 0, values);
 }
 
@@ -336,6 +360,23 @@ function makeOutputTexture(device: GPUDevice, width: number, height: number): GP
   });
 }
 
+function clearTextures(device: GPUDevice, textures: GPUTexture[]): void {
+  if (textures.length === 0) return;
+  const encoder = device.createCommandEncoder();
+  for (const texture of textures) {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: "clear",
+        storeOp: "store"
+      }]
+    });
+    pass.end();
+  }
+  device.queue.submit([encoder.finish()]);
+}
+
 async function createComputePipeline(
   device: GPUDevice,
   layout: GPUPipelineLayout,
@@ -368,11 +409,12 @@ export async function createProgram(
   context: GpuContext,
   source: string,
   settings: ProjectSettings,
+  files: ReadonlyArray<ProjectFile>,
   channelSources: ReadonlyMap<number, ChannelRuntimeSource> = new Map()
 ): Promise<ProgramState> {
   const { device } = context;
   const size = parseSize(settings.size);
-  const computePipeline = await createComputePipeline(device, context.computePipelineLayout, source, "image pass");
+  const computePipeline = await createComputePipeline(device, context.computePipelineLayout, composeShader(source), "image pass");
   const outputTexture = makeOutputTexture(device, size.width, size.height);
   const outputView = outputTexture.createView();
   const uniformBuffer = device.createBuffer({
@@ -399,20 +441,21 @@ export async function createProgram(
   );
   const pendingBufferPasses = await Promise.all(
     (settings.buffers ?? []).slice(0, 4).map(async (buffer, channel): Promise<PendingBufferPassState | null> => {
-      if (!buffer?.wgsl) {
+      if (!buffer?.file) {
         return null;
       }
+      const bufferSource = projectFileSource(files, buffer.file);
       const bufferPipeline = await createComputePipeline(
         device,
         context.computePipelineLayout,
-        buffer.wgsl,
+        composeShader(bufferSource),
         `buffer${channel} pass`
       );
       const first = makeOutputTexture(device, size.width, size.height);
       const second = makeOutputTexture(device, size.width, size.height);
       return {
         channel,
-        source: buffer.wgsl,
+        source: bufferSource,
         computePipeline: bufferPipeline,
         textures: [first, second],
         views: [first.createView(), second.createView()]
@@ -421,6 +464,7 @@ export async function createProgram(
   );
   const channelViews = channelTextures.map((texture) => texture.createView());
   const pendingBuffers = pendingBufferPasses.filter((buffer): buffer is PendingBufferPassState => buffer !== null);
+  clearTextures(device, pendingBuffers.flatMap((buffer) => buffer.textures));
   const previousChannelViews = (readIndex: number): GPUTextureView[] =>
     channelViews.map((view, channel) => pendingBuffers.find((buffer) => buffer.channel === channel)?.views[readIndex] ?? view);
   const currentChannelViews = (readIndex: number): GPUTextureView[] =>

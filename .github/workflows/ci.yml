@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev
+      - run: cmake --preset dev
+      - run: cmake --build --preset dev --parallel 2
+      - run: ctest --test-dir build-shady --output-on-failure
+      - run: ./build-shady/shady-frame examples/pills/frosted_glass.wgsl --size 64x40 --time 1 --output /tmp/pills.ppm
+
+  browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

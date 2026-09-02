@@ -351,11 +351,6 @@ textarea {
   color: #aee4ff;
 }
 
-.renderer-badge[data-kind="webgl"] {
-  border-color: #d7ff65;
-  color: #d7ff65;
-}
-
 .renderer-badge[data-kind="unavailable"] {
   border-color: #ff8c8c;
   color: #ffb4b4;

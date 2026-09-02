@@ -1,49 +1,36 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 20,
-    "patch": 0
-  },
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
   "configurePresets": [
     {
       "name": "dev",
-      "displayName": "Debug (dev)",
-      "binaryDir": "${sourceDir}/build",
+      "displayName": "Shady debug",
+      "binaryDir": "${sourceDir}/build-shady",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "AST_STRICT": true,
-        "AST_WARN_AS_ERROR": true,
-        "AST_BUILD_APP": true,
-        "AST_BUILD_TESTS": true,
-        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+        "SHADY_STRICT": true,
+        "SHADY_WARN_AS_ERROR": true,
+        "SHADY_BUILD_DESKTOP": true,
+        "SHADY_BUILD_FRAME": true,
+        "SHADY_BUILD_TESTS": true
       }
     },
     {
       "name": "release",
-      "displayName": "Release",
-      "binaryDir": "${sourceDir}/build-release",
+      "displayName": "Shady release",
+      "binaryDir": "${sourceDir}/build-shady-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "AST_STRICT": true,
-        "AST_WARN_AS_ERROR": true,
-        "AST_BUILD_APP": true,
-        "AST_BUILD_TESTS": true,
-        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+        "SHADY_STRICT": true,
+        "SHADY_WARN_AS_ERROR": true,
+        "SHADY_BUILD_DESKTOP": true,
+        "SHADY_BUILD_FRAME": true,
+        "SHADY_BUILD_TESTS": true
       }
     }
   ],
   "buildPresets": [
-    {
-      "name": "dev",
-      "configurePreset": "dev",
-      "jobs": 0
-    },
-    {
-      "name": "release",
-      "configurePreset": "release",
-      "jobs": 0
-    }
+    { "name": "dev", "configurePreset": "dev", "jobs": 0 },
+    { "name": "release", "configurePreset": "release", "jobs": 0 }
   ]
 }
-

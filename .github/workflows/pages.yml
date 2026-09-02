@@ -39,7 +39,7 @@ jobs:
       - name: Build web app
         working-directory: web
         env:
-          VITE_BASE: /asm-shader-toy/
+          VITE_BASE: /shady/
         run: npm run build
 
       - name: Configure Pages

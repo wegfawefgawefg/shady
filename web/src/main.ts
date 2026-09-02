@@ -1,6 +1,5 @@
 import "./styles.css";
-import { createAsmEditor, createWgslEditor, setEditorText } from "./asmEditor";
-import { compileAsmToGlsl, compileAsmToWgsl } from "./compiler";
+import { createEditor, setEditorText } from "./editor";
 import {
   decodeProject,
   encodeProject,
@@ -12,6 +11,7 @@ import {
   type ProjectBundle
 } from "./project";
 import { makeTemplateProject, templateProjects } from "./templates";
+import { projectFileSource } from "./shader";
 import {
   configureCanvas,
   createProgram,
@@ -23,15 +23,6 @@ import {
   type GpuContext,
   type ProgramState
 } from "./webgpu";
-import {
-  configureGlCanvas,
-  createGlProgram,
-  destroyGlProgram,
-  initWebGl,
-  renderGlFrame,
-  type GlContext,
-  type GlProgramState
-} from "./webgl";
 
 declare const __APP_VERSION__: string;
 
@@ -39,7 +30,6 @@ type AppState = {
   project: ProjectBundle;
   selectedFile: string;
   running: boolean;
-  showWgsl: boolean;
   frame: number;
   startSeconds: number;
   fps: number;
@@ -60,19 +50,44 @@ if (!app) {
 }
 const appRoot: HTMLDivElement = app;
 
+function browserScancode(code: string): number {
+  if (/^Key[A-Z]$/.test(code)) return 4 + code.charCodeAt(3) - 65;
+  if (/^Digit[1-9]$/.test(code)) return 30 + Number(code[5]) - 1;
+  if (code === "Digit0") return 39;
+  const named: Record<string, number> = {
+    Enter: 40, Escape: 41, Backspace: 42, Tab: 43, Space: 44,
+    ArrowRight: 79, ArrowLeft: 80, ArrowDown: 81, ArrowUp: 82,
+    ShiftLeft: 225, ShiftRight: 229, ControlLeft: 224, ControlRight: 228,
+    AltLeft: 226, AltRight: 230
+  };
+  return named[code] ?? -1;
+}
+
+function pollGamepad(input: BrowserInputState): void {
+  const gamepad = navigator.getGamepads?.().find((candidate) => candidate?.connected);
+  input.gamepadButtons.fill(0);
+  input.gamepadAxes.fill(0);
+  if (!gamepad) return;
+  gamepad.buttons.slice(0, 32).forEach((button, index) => {
+    input.gamepadButtons[index] = button.value;
+  });
+  gamepad.axes.slice(0, 16).forEach((axis, index) => {
+    input.gamepadAxes[index] = axis;
+  });
+}
+
 void main().catch((error) => {
   appRoot.textContent = error instanceof Error ? error.message : String(error);
 });
 
 async function main(): Promise<void> {
   const hashParams = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : location.hash);
-  const defaultTemplate = templateProjects.find((candidate) => candidate.id === "examples/basics/plasma.asm");
+  const defaultTemplate = templateProjects.find((candidate) => candidate.id === "examples/pills/frosted_glass.wgsl");
   const defaultProject = defaultTemplate ? makeTemplateProject(defaultTemplate) : makeDefaultProject();
   const state: AppState = {
     project: defaultProject,
     selectedFile: defaultProject.settings.main,
     running: true,
-    showWgsl: false,
     frame: 0,
     startSeconds: performance.now() / 1000,
     fps: 0,
@@ -88,7 +103,10 @@ async function main(): Promise<void> {
     mouseClickY: 0,
     mouseButtons: Array.from({ length: 8 }, () => 0),
     mouseWheelX: 0,
-    mouseWheelY: 0
+    mouseWheelY: 0,
+    keys: Array.from({ length: 512 }, () => 0),
+    gamepadButtons: Array.from({ length: 32 }, () => 0),
+    gamepadAxes: Array.from({ length: 16 }, () => 0)
   };
 
   const loaded = await decodeProject(location.hash);
@@ -107,7 +125,7 @@ appRoot.innerHTML = `
   <main class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-name">ASM Shader Toy</span>
+        <span class="brand-name">Shady</span>
         <span class="brand-version">v${__APP_VERSION__}</span>
       </div>
       <section class="sidebar-section">
@@ -142,25 +160,19 @@ appRoot.innerHTML = `
         <label>Main <select data-main></select></label>
         <label>Size <select data-size></select></label>
         <label>Scale <input data-scale type="number" min="1" max="8" /></label>
-        <button class="button primary" data-action="compile-asm">Compile ASM</button>
-        <button class="button" data-action="run">Run WGSL</button>
+        <button class="button primary" data-action="run">Run WGSL</button>
         <button class="button" data-action="pause">Pause</button>
         <button class="button" data-action="reset">Reset</button>
         <button class="button" data-action="save-frame">Save Frame</button>
         <button class="button" data-action="copy-frame">Copy PNG</button>
         <button class="button" data-action="record-video">Record</button>
-        <button class="button" data-action="toggle-wgsl">WGSL</button>
         <output class="renderer-badge" data-renderer>Renderer: starting</output>
         <output data-fps>0 fps</output>
       </div>
-      <div class="split" data-split>
+      <div class="split">
         <section class="source-panel">
-          <div class="panel-title">ASM Project</div>
-          <div class="code-editor" data-asm></div>
-        </section>
-        <section class="source-panel wgsl-panel" data-wgsl-panel>
-          <div class="panel-title">WGSL</div>
-          <div class="code-editor" data-wgsl></div>
+          <div class="panel-title">WGSL Project</div>
+          <div class="code-editor" data-source></div>
         </section>
       </div>
       <pre class="diagnostics" data-diagnostics></pre>
@@ -176,10 +188,7 @@ const fileList = appRoot.querySelector<HTMLDivElement>(".file-list")!;
 const mainSelect = appRoot.querySelector<HTMLSelectElement>("[data-main]")!;
 const sizeSelect = appRoot.querySelector<HTMLSelectElement>("[data-size]")!;
 const scaleInput = appRoot.querySelector<HTMLInputElement>("[data-scale]")!;
-const asmEditorHost = appRoot.querySelector<HTMLDivElement>("[data-asm]")!;
-const splitPane = appRoot.querySelector<HTMLDivElement>("[data-split]")!;
-const wgslPanel = appRoot.querySelector<HTMLElement>("[data-wgsl-panel]")!;
-const wgslEditorHost = appRoot.querySelector<HTMLDivElement>("[data-wgsl]")!;
+const editorHost = appRoot.querySelector<HTMLDivElement>("[data-source]")!;
 const diagnostics = appRoot.querySelector<HTMLPreElement>("[data-diagnostics]")!;
 const statusText = appRoot.querySelector<HTMLDivElement>("[data-status]")!;
 const rendererText = appRoot.querySelector<HTMLOutputElement>("[data-renderer]")!;
@@ -208,16 +217,9 @@ function confirmButton(button: HTMLButtonElement, text: string): void {
   }, 1200);
 }
 
-let suppressAsmChange = false;
-let suppressWgslChange = false;
-const asmEditor = createAsmEditor(asmEditorHost, () => {
-  if (!suppressAsmChange) {
-    saveCurrentFile();
-    scheduleCompile(compileAsm);
-  }
-});
-const wgslEditor = createWgslEditor(wgslEditorHost, () => {
-  if (!suppressWgslChange) {
+let suppressEditorChange = false;
+const sourceEditor = createEditor(editorHost, () => {
+  if (!suppressEditorChange) {
     saveCurrentFile();
     scheduleCompile(compileWgsl);
   }
@@ -252,6 +254,10 @@ function currentFile() {
   return state.project.files.find((file) => file.path === state.selectedFile) ?? state.project.files[0];
 }
 
+function mainSource(): string {
+  return projectFileSource(state.project.files, state.project.settings.main);
+}
+
 function fileName(path: string): string {
   return path.split("/").at(-1) ?? path;
 }
@@ -276,16 +282,14 @@ function syncCanvasSize(): void {
   if (gpuContext) {
     configureCanvas(gpuContext);
   }
-  if (glContext) {
-    configureGlCanvas(glContext);
-  }
 }
 
 function shaderMousePosition(event: PointerEvent | MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   const size = parseSize(state.project.settings.size);
   const x = Math.max(0, Math.min(size.width - 1, ((event.clientX - rect.left) / rect.width) * size.width));
-  const y = Math.max(0, Math.min(size.height - 1, ((event.clientY - rect.top) / rect.height) * size.height));
+  const y = Math.max(0, Math.min(size.height - 1,
+    size.height - ((event.clientY - rect.top) / rect.height) * size.height));
   return { x, y };
 }
 
@@ -328,14 +332,9 @@ function renderProjectUi(): void {
   mainSelect.value = state.project.settings.main;
   syncSizeSelect();
   scaleInput.value = String(state.project.settings.scale);
-  suppressAsmChange = true;
-  setEditorText(asmEditor, currentFile().content);
-  suppressAsmChange = false;
-  suppressWgslChange = true;
-  setEditorText(wgslEditor, state.project.settings.wgsl);
-  suppressWgslChange = false;
-  splitPane.classList.toggle("show-wgsl", state.showWgsl);
-  wgslPanel.hidden = !state.showWgsl;
+  suppressEditorChange = true;
+  setEditorText(sourceEditor, currentFile().content);
+  suppressEditorChange = false;
   renderBufferControls();
   renderChannelControls();
   syncCanvasSize();
@@ -481,21 +480,18 @@ function renderChannelControls(): void {
 
 function saveCurrentFile(): void {
   const file = currentFile();
-  file.content = asmEditor.state.doc.toString();
-  state.project.settings.wgsl = wgslEditor.state.doc.toString();
+  file.content = sourceEditor.state.doc.toString();
 }
 
 let gpuContext: GpuContext | null = null;
 let program: ProgramState | null = null;
-let glContext: GlContext | null = null;
-let glProgram: GlProgramState | null = null;
 let rendererError = "";
 let programBuildVersion = 0;
 await restoreProjectRuntimeSources();
 renderProjectUi();
 try {
   gpuContext = await initWebGpu(canvas);
-  program = await createProgram(gpuContext, state.project.settings.wgsl, state.project.settings, channelSources);
+  program = await createProgram(gpuContext, mainSource(), state.project.settings, state.project.files, channelSources);
   setDiagnostics();
   rendererText.textContent = "Renderer: WebGPU";
   rendererText.dataset.kind = "webgpu";
@@ -503,27 +499,11 @@ try {
   statusText.textContent = `WebGPU ready (${gpuContext.adapterLabel})`;
 } catch (error) {
   rendererError = error instanceof Error ? error.message : String(error);
-  try {
-    glContext = initWebGl(canvas);
-    glProgram = await createGlProgram(glContext, state.project.settings.glsl ?? "", state.project.settings, channelSources);
-    setDiagnostics();
-    rendererText.textContent = "Renderer: WebGL2 fallback";
-    rendererText.dataset.kind = "webgl";
-    rendererText.title = "WebGPU was unavailable, so this is using the WebGL2 GPU fallback.";
-    statusText.textContent = "WebGL2 ready (fallback)";
-  } catch (fallbackError) {
-    const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-    setError(`${rendererError}
-
-WebGL2 fallback also failed:
-${fallbackMessage}
-
-The editor and ASM compiler are still usable, but this browser could not start a GPU renderer.`);
-    rendererText.textContent = "Renderer: unavailable";
-    rendererText.dataset.kind = "unavailable";
-    rendererText.title = "No browser GPU renderer could be started.";
-    statusText.textContent = "GPU renderer unavailable";
-  }
+  setError(rendererError);
+  rendererText.textContent = "Renderer: unavailable";
+  rendererText.dataset.kind = "unavailable";
+  rendererText.title = "WebGPU could not be started.";
+  statusText.textContent = "WebGPU unavailable";
 }
 let compileTimer: number | undefined;
 
@@ -541,71 +521,54 @@ async function waitForSubmittedWork(context: GpuContext): Promise<void> {
   try {
     await context.device.queue.onSubmittedWorkDone();
   } catch {
-    // Device errors are reported through the uncaptured-error path below.
+    // report device errors below
   }
 }
 
 async function replaceProgram(status: string): Promise<void> {
-  if (!gpuContext && !glContext) {
+  if (!gpuContext) {
     setError(rendererError || "No GPU renderer is available.");
     statusText.textContent = "GPU renderer unavailable";
     return;
   }
   const version = ++programBuildVersion;
-  if (gpuContext) {
-    const context = gpuContext;
-    const oldProgram = program;
-    statusText.textContent = "Building WGSL...";
-    const nextProgram = await createProgram(context, state.project.settings.wgsl, state.project.settings, channelSources);
-    if (version === programBuildVersion) {
-      program = nextProgram;
-      await waitForSubmittedWork(context);
-      destroyProgram(oldProgram);
-      if (version === programBuildVersion) {
-        setDiagnostics();
-        statusText.textContent = status;
-      }
-      return;
-    }
-    await waitForSubmittedWork(context);
-    destroyProgram(nextProgram);
-    return;
-  }
-  const context = glContext!;
-  const oldProgram = glProgram;
-  statusText.textContent = "Building GLSL...";
-  const nextProgram = await createGlProgram(context, state.project.settings.glsl ?? "", state.project.settings, channelSources);
+  const context = gpuContext;
+  const oldProgram = program;
+  statusText.textContent = "Building WGSL...";
+  const nextProgram = await createProgram(context, mainSource(), state.project.settings, state.project.files, channelSources);
   if (version === programBuildVersion) {
-    glProgram = nextProgram;
-    destroyGlProgram(context, oldProgram);
+    program = nextProgram;
+    await waitForSubmittedWork(context);
+    destroyProgram(oldProgram);
     if (version === programBuildVersion) {
       setDiagnostics();
       statusText.textContent = status;
     }
     return;
   }
-  destroyGlProgram(context, nextProgram);
+  await waitForSubmittedWork(context);
+  destroyProgram(nextProgram);
 }
 
 async function compileWgsl(): Promise<boolean> {
   saveCurrentFile();
-  if (!gpuContext && !glContext) {
+  if (!gpuContext) {
     setError(rendererError || "No GPU renderer is available.");
     statusText.textContent = "GPU renderer unavailable";
     return false;
   }
   try {
-    await replaceProgram(gpuContext ? "Compiled WGSL" : "Compiled GLSL");
+    await replaceProgram("Compiled WGSL");
     return true;
   } catch (error) {
     setError(error instanceof Error ? error.message : String(error));
-    statusText.textContent = gpuContext ? "WGSL compile failed" : "GLSL compile failed";
+    statusText.textContent = "WGSL compile failed";
     return false;
   }
 }
 
 async function resetProgram(): Promise<void> {
-  if (!gpuContext && !glContext) {
+  if (!gpuContext) {
     setError(rendererError || "No GPU renderer is available.");
     statusText.textContent = "GPU renderer unavailable";
     return;
@@ -627,7 +590,7 @@ function saveFrame(): void {
     }
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `asm-shader-toy-frame-${state.frame}.png`;
+    link.download = `shady-frame-${state.frame}.png`;
     link.click();
     URL.revokeObjectURL(link.href);
     statusText.textContent = "Saved frame";
@@ -691,7 +654,7 @@ async function recordVideo(seconds: number): Promise<void> {
   } finally {
     stream.getTracks().forEach((track) => track.stop());
   }
-  downloadBlob(new Blob(chunks, { type: mimeType }), `asm-shader-toy-${duration.toFixed(1)}s.webm`);
+  downloadBlob(new Blob(chunks, { type: mimeType }), `shady-${duration.toFixed(1)}s.webm`);
   statusText.textContent = `Saved ${duration.toFixed(1)}s video`;
 }
 
@@ -953,44 +916,6 @@ async function restoreProjectRuntimeSources(): Promise<void> {
 }
 
 
-async function compileAsm(): Promise<boolean> {
-  saveCurrentFile();
-  setDiagnostics();
-  statusText.textContent = "Compiling ASM...";
-  const diagnosticsList: string[] = [];
-  const maxSteps = state.project.settings.maxSteps ?? 4096;
-  const imageResult = compileAsmToWgsl(state.project.files, state.project.settings.main, maxSteps);
-  const imageGlslResult = compileAsmToGlsl(state.project.files, state.project.settings.main, maxSteps);
-  diagnosticsList.push(
-    ...imageResult.diagnostics.map((diagnostic) => `${diagnostic.file}:${diagnostic.line}: ${diagnostic.message}`),
-    ...imageGlslResult.diagnostics.map((diagnostic) => `${diagnostic.file}:${diagnostic.line}: ${diagnostic.message}`)
-  );
-  for (const buffer of bufferSettings()) {
-    if (!buffer) {
-      continue;
-    }
-    const result = compileAsmToWgsl(state.project.files, buffer.file, maxSteps);
-    const glslResult = compileAsmToGlsl(state.project.files, buffer.file, maxSteps);
-    buffer.wgsl = result.wgsl;
-    buffer.glsl = glslResult.glsl;
-    diagnosticsList.push(
-      ...result.diagnostics.map((diagnostic) => `${diagnostic.file}:${diagnostic.line}: ${diagnostic.message}`),
-      ...glslResult.diagnostics.map((diagnostic) => `${diagnostic.file}:${diagnostic.line}: ${diagnostic.message}`)
-    );
-  }
-  if (diagnosticsList.length > 0) {
-    setError(diagnosticsList.join("\n"));
-    statusText.textContent = "ASM compile failed";
-    return false;
-  }
-  state.project.settings.wgsl = imageResult.wgsl;
-  state.project.settings.glsl = imageGlslResult.glsl;
-  suppressWgslChange = true;
-  setEditorText(wgslEditor, imageResult.wgsl);
-  suppressWgslChange = false;
-  return compileWgsl();
-}
-
 function currentSizeKey(): string {
   const size = parseSize(state.project.settings.size);
   return `${size.width}x${size.height}`;
@@ -999,6 +924,7 @@ function currentSizeKey(): string {
 function tick(): void {
   const tickSeconds = performance.now() / 1000;
   if (state.running && gpuContext && program && program.sizeKey === currentSizeKey()) {
+    pollGamepad(inputState);
     renderFrame(gpuContext, program, state.project.settings, state.frame, state.startSeconds, channelSources, inputState);
     inputState.mouseWheelX = 0;
     inputState.mouseWheelY = 0;
@@ -1006,25 +932,6 @@ function tick(): void {
       setError(gpuContext.errors.join("\n"));
       statusText.textContent = "WebGPU error";
       gpuContext.errors.length = 0;
-    }
-    state.frame += 1;
-    state.fpsFrames += 1;
-    const now = tickSeconds;
-    const elapsed = now - state.fpsStart;
-    if (elapsed >= 0.5) {
-      state.fps = state.fpsFrames / elapsed;
-      state.fpsFrames = 0;
-      state.fpsStart = now;
-      fpsText.textContent = `${state.fps.toFixed(1)} fps`;
-    }
-  } else if (state.running && glContext && glProgram && glProgram.sizeKey === currentSizeKey()) {
-    renderGlFrame(glContext, glProgram, state.project.settings, state.frame, state.startSeconds, channelSources, inputState);
-    inputState.mouseWheelX = 0;
-    inputState.mouseWheelY = 0;
-    if (glContext.errors.length > 0) {
-      setError(glContext.errors.join("\n"));
-      statusText.textContent = "WebGL2 error";
-      glContext.errors.length = 0;
     }
     state.frame += 1;
     state.fpsFrames += 1;
@@ -1057,7 +964,7 @@ async function loadTemplate(templateId: string): Promise<void> {
   renderProjectUi();
   statusText.textContent = `Loading ${template.name}...`;
   history.replaceState(null, "", `#template=${encodeURIComponent(template.id)}`);
-  const loaded = await compileAsm();
+  const loaded = await compileWgsl();
   templateSelect.value = "";
   if (loaded) {
     statusText.textContent = `Loaded ${template.name}`;
@@ -1089,7 +996,7 @@ appRoot.addEventListener("input", (event) => {
   }
   if (target === mainSelect) {
     state.project.settings.main = mainSelect.value;
-    scheduleCompile(compileAsm);
+    scheduleCompile(compileWgsl);
   }
   if (target === templateSelect) {
     void loadTemplate(templateSelect.value).catch((error) => {
@@ -1099,8 +1006,8 @@ appRoot.addEventListener("input", (event) => {
   }
   if (target instanceof HTMLSelectElement && target.dataset.buffer !== undefined) {
     const index = Number(target.dataset.buffer);
-    bufferSettings()[index] = target.value ? { file: target.value, wgsl: "" } : null;
-    scheduleCompile(compileAsm);
+    bufferSettings()[index] = target.value ? { file: target.value } : null;
+    scheduleCompile(compileWgsl);
   }
 });
 
@@ -1139,7 +1046,16 @@ canvas.addEventListener("wheel", (event) => {
 });
 
 window.addEventListener("pointerdown", resumeAudioContexts);
-window.addEventListener("keydown", resumeAudioContexts);
+window.addEventListener("keydown", (event) => {
+  resumeAudioContexts();
+  const scancode = browserScancode(event.code);
+  if (scancode >= 0) inputState.keys[scancode] = 1;
+});
+window.addEventListener("keyup", (event) => {
+  const scancode = browserScancode(event.code);
+  if (scancode >= 0) inputState.keys[scancode] = 0;
+});
+window.addEventListener("blur", () => inputState.keys.fill(0));
 
 canvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();
@@ -1152,9 +1068,6 @@ appRoot.addEventListener("click", (event) => {
   }
   if (action === "run") {
     void compileWgsl();
-  }
-  if (action === "compile-asm") {
-    void compileAsm();
   }
   if (action === "pause") {
     state.running = !state.running;
@@ -1190,14 +1103,13 @@ appRoot.addEventListener("click", (event) => {
       });
     }
   }
-  if (action === "toggle-wgsl") {
-    state.showWgsl = !state.showWgsl;
-    renderProjectUi();
-  }
   if (action === "add-file") {
     saveCurrentFile();
-    const path = `file${state.project.files.length}.asm`;
-    state.project.files.push({ path, content: "" });
+    const path = `pass${state.project.files.length}.wgsl`;
+    state.project.files.push({
+      path,
+      content: "fn shade(pixel: ShadyPixel) -> vec4<f32> {\n    return vec4<f32>(pixel.uv, 0.0, 1.0);\n}\n"
+    });
     state.selectedFile = path;
     renderProjectUi();
   }
@@ -1206,7 +1118,7 @@ appRoot.addEventListener("click", (event) => {
     const blob = new Blob([JSON.stringify(state.project, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "asm-shader-toy-project.json";
+    link.download = "shady-project.json";
     link.click();
     URL.revokeObjectURL(link.href);
   }

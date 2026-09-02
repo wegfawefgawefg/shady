@@ -1,5 +1,3 @@
-import { compileAsmToGlsl, compileAsmToWgsl } from "./compiler";
-
 export type ProjectFile = {
   path: string;
   content: string;
@@ -9,11 +7,8 @@ export type SizePreset = "gb" | "gba" | "nes" | "snes" | "n64" | "ps1" | "psp";
 
 export type ProjectSettings = {
   main: string;
-  wgsl: string;
-  glsl?: string;
   size: SizePreset | `${number}x${number}`;
   scale: number;
-  maxSteps?: number;
   channels: ChannelSetting[];
   buffers?: Array<BufferSetting | null>;
 };
@@ -36,8 +31,6 @@ export type ChannelSetting = {
 
 export type BufferSetting = {
   file: string;
-  wgsl: string;
-  glsl?: string;
 };
 
 export const sizePresets: Record<SizePreset, { width: number; height: number }> = {
@@ -61,25 +54,20 @@ export function parseSize(value: ProjectSettings["size"]): { width: number; heig
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
-const defaultAsm = `.include <std/screen.inc>
-
-norm tmp0, px, width
-norm tmp1, py, height
-out tmp0, tmp1, 0.5, 1.0
+const defaultShader = `fn shade(pixel: ShadyPixel) -> vec4<f32> {
+    let pulse = 0.5 + 0.5 * sin(inputs.time);
+    return vec4<f32>(pixel.uv, pulse, 1.0);
+}
 `;
 
 export function makeDefaultProject(): ProjectBundle {
-  const files = [{ path: "main.asm", content: defaultAsm }];
-  const compiled = compileAsmToWgsl(files, "main.asm");
+  const files = [{ path: "main.wgsl", content: defaultShader }];
   return {
     files,
     settings: {
-      main: "main.asm",
-      wgsl: compiled.wgsl,
-      glsl: compileAsmToGlsl(files, "main.asm").glsl,
+      main: "main.wgsl",
       size: "gb",
       scale: 4,
-      maxSteps: 4096,
       channels: [
         { kind: "fallback", name: "channel0", width: 1, height: 1 },
         { kind: "fallback", name: "channel1", width: 1, height: 1 },
@@ -119,11 +107,10 @@ export function normalizeProject(bundle: ProjectBundle): ProjectBundle {
     ...bundle,
     settings: {
       ...bundle.settings,
-      maxSteps: Math.max(1, Math.floor(bundle.settings.maxSteps ?? 4096)),
       channels: channels.slice(0, 4).map((channel, index) => normalizeChannel(channel, index)),
       buffers: buffers
         .slice(0, 4)
-        .map((buffer) => (buffer?.file ? { file: buffer.file, wgsl: buffer.wgsl ?? "", ...(buffer.glsl ? { glsl: buffer.glsl } : {}) } : null))
+        .map((buffer) => (buffer?.file ? { file: buffer.file } : null))
     }
   };
 }

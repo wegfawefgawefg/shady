@@ -2,8 +2,8 @@
 set -euo pipefail
 
 url="${1:-http://localhost:5173/}"
-browser="${AST_BROWSER:-google-chrome}"
-profile="${AST_BROWSER_PROFILE:-$(mktemp -d /tmp/asm-shader-toy-webgpu-profile.XXXXXX)}"
+browser="${SHADY_BROWSER:-google-chrome}"
+profile="${SHADY_BROWSER_PROFILE:-$(mktemp -d /tmp/shady-webgpu-profile.XXXXXX)}"
 
 exec "$browser" \
   --user-data-dir="$profile" \

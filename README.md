@@ -1,333 +1,82 @@
-# asm-shader-toy
+# Shady
 
-<p align="center">
-  <img src="docs/assets/logo.svg" alt="asm-shader-toy" width="720">
-</p>
+Shady is a small Shadertoy-shaped WGSL workshop. It gives one shader the screen, a
+clock, mouse and keyboard state, four texture channels, four optional feedback passes,
+hot reload, and almost nothing else. The same project model runs as a native C++20
+program on wgpu-native/Vulkan and as a browser editor on WebGPU.
 
-`asm-shader-toy` is a tiny Shadertoy-like playground where the shader is a small
-assembly language run once per pixel. It is meant to feel like a learnable
-machine: registers, labels, branches, subroutines, texture channels, feedback
-buffers, and a visible rendering harness.
+The default sketch is the frosted pill study in
+[`examples/pills/frosted_glass.wgsl`](examples/pills/frosted_glass.wgsl). It is the
+reason this repository exists: a place to reproduce a visual quickly, tune it live,
+and keep the shader portable enough to rewrite for Shadertoy later.
 
-<p align="center">
-  <img src="docs/assets/example-collage.png" alt="collage of asm-shader-toy examples">
-</p>
+## Build and run
 
-Try the hosted browser app:
-
-https://wegfawefgawefg.github.io/asm-shader-toy/
-
-<p align="center">
-  <img src="docs/assets/screenshots/web-interface.png" alt="asm-shader-toy browser editor">
-</p>
-
-## Features
-
-- Browser editor with WebGPU rendering, WebGL2 fallback, templates, share URLs,
-  PNG export, video recording, and live image/video/webcam/audio inputs.
-- Native C++ CPU VM renderer with a default GBA-size intermediate texture:
-  `240x160`.
-- Optional native WebGPU runner and frame tools for emitted WGSL.
-- SDL2 window with nearest-neighbor scaling, hot reload, FPS overlay, pause, and reset.
-- Assembly language with labels, local labels, includes, aliases, constants, `.consts`, branches, calls, and bounded execution.
-- Shadertoy-style inputs for resolution, time, frame, date, mouse, keyboard, and gamepad.
-- Channels for PNG/JPEG images, streaming video, webcam, audio files, microphone, generated noise, and feedback buffers.
-- Headless `--dry-run`, `--no-graphics`, `--save-frame`, and `--measure-fps` modes for validation and profiling.
-
-## Build
+On Ubuntu, install CMake, a C++20 compiler, SDL2, SDL2_image, pkg-config, and optionally
+FFmpeg for video, audio, webcam, and microphone channels. CMake downloads the pinned
+WebGPU-distribution package and uses its wgpu-native backend.
 
 ```sh
+sudo apt install cmake g++ pkg-config libsdl2-dev libsdl2-image-dev ffmpeg
 ./scripts/build.sh
+./build-shady/shady examples/pills/frosted_glass.wgsl --size 640x420 --scale 2
 ```
 
-Validate every checked-in example without opening a window:
+The native window currently creates its WebGPU surface through SDL/X11. Press F12 to
+write `shady-frame.png`, Escape to quit, and save any project shader to hot reload it.
+An invalid edit is reported by WebGPU while the last good pipeline remains active.
+
+For deterministic automation, render one frame without a window:
 
 ```sh
-./scripts/validate_examples.sh
+./build-shady/shady-frame examples/pills/frosted_glass.wgsl \
+  --size 640x420 --time 1.25 --output /tmp/pills.ppm
 ```
 
-This also runs the browser tests/build with native-vs-browser WGSL compiler
-parity fixtures enabled.
-
-Emit WGSL for a full image-plus-buffer project:
-
-```sh
-./build/asm-shader-toy examples/buffers/life_display.asm \
-  --buffer0 examples/buffers/life_buffer.asm \
-  --emit-wgsl-bundle /tmp/asm-shader-toy-wgsl
-```
-
-Build the browser prototype:
+Run the browser workshop independently:
 
 ```sh
 cd web
 npm install
-npm run build
-```
-
-Build the optional native WebGPU tools:
-
-```sh
-./scripts/build_webgpu_probe.sh
-./build-webgpu-probe/ast-webgpu-probe
-./build-webgpu-probe/ast-webgpu-frame examples/basics/plasma.asm \
-  --size gba \
-  --compare-cpu \
-  --output /tmp/asm-shader-toy-gpu.ppm
-./build-webgpu-probe/ast-webgpu-frame examples/textures/multi_image_mix.asm \
-  --size 64x64 \
-  --channel0 examples/assets/checker.png \
-  --channel1 examples/assets/bars.png \
-  --compare-cpu
-./build-webgpu-probe/ast-webgpu-frame examples/textures/noise_field.asm \
-  --size 64x64 \
-  --noise0 42 \
-  --compare-cpu
-./build-webgpu-probe/ast-webgpu-frame examples/buffers/ramp_display.asm \
-  --buffer0 examples/buffers/ramp_buffer.asm \
-  --size 32x24 \
-  --frames 4 \
-  --compare-cpu
-./build-webgpu-probe/ast-webgpu-frame examples/video/video_texel.asm \
-  --video0 examples/assets/video/testsrc_160x90.mp4 \
-  --size 160x90 \
-  --time 0.5 \
-  --compare-cpu
-./build-webgpu-probe/ast-webgpu-frame examples/audio/audio_scope.asm \
-  --audio0 examples/assets/audio/two_tone.wav \
-  --size 64x32 \
-  --time 0.25 \
-  --compare-cpu
-./build-webgpu-probe/ast-webgpu-run examples/basics/plasma.asm \
-  --size gba \
-  --scale 4
-./build-webgpu-probe/ast-webgpu-run examples/webcam/webcam_channel.asm \
-  --webcam0 \
-  --size gba \
-  --scale 4
-./build-webgpu-probe/ast-webgpu-run examples/microphone/mic_scope.asm \
-  --mic0 \
-  --size gba \
-  --scale 4
-./build-webgpu-probe/ast-webgpu-surface-probe --size 160x90 --frames 60 --scale 2
-./scripts/validate_webgpu_frame.sh
-```
-
-The probe requests a native WebGPU adapter/device, dispatches a tiny handwritten
-compute shader, then runs a WGSL shader emitted from asm into an `rgba8unorm`
-storage texture and verifies CPU readback pixels. The frame tool renders one
-deterministic asm image pass through emitted WGSL and can compare the GPU
-readback with the CPU VM, including static image, generated noise, and feedback
-buffer channels. It can also sample a deterministic frame from video channels.
-Audio-file channels are decoded into the same 512x2 waveform/spectrum texture
-shape as the CPU runner.
-The `ast-webgpu-run` tool opens an SDL window, renders emitted asm WGSL on the
-GPU, and presents the intermediate texture with nearest-neighbor integer
-scaling. It can also stream mirrored webcam and microphone channels into GPU
-textures.
-The surface probe opens an SDL window, creates a native WebGPU surface, clears
-it, and presents frames.
-
-## Run
-
-Default demo:
-
-```sh
-./scripts/run.sh
-```
-
-Specific examples:
-
-```sh
-./build/asm-shader-toy examples/basics/plasma.asm --size gba --scale 4
-./build/asm-shader-toy examples/raymarch/pixelated_planet.asm --size gba --scale 4
-./build/asm-shader-toy examples/buffers/life_display.asm \
-  --buffer0 examples/buffers/life_buffer.asm \
-  --size gba \
-  --scale 4
-```
-
-Graphical runs hot reload the active program and any `.include` dependencies on
-save. If a reload has assembly errors, diagnostics are printed and the last good
-program keeps running.
-
-## Browser App
-
-The `web/` app has a multi-file project editor, asm-to-WGSL compilation, a WGSL
-debug view, import/export JSON, compressed share URLs, and a GPU preview canvas
-with nearest-neighbor scaling. It prefers WebGPU and falls back to WebGL2 when
-WebGPU is unavailable. The preview has pause, reset, FPS display, PNG frame
-export, clipboard copy, and short video recording controls. ASM and WGSL edits
-hot-compile after a short debounce.
-
-Hosted build:
-
-https://wegfawefgawefg.github.io/asm-shader-toy/
-
-Run it locally:
-
-```sh
-cd web
+npm test
 npm run dev
 ```
 
-The browser compiler currently covers includes, aliases, `.const`, `.consts`,
-labels, branches, calls, arithmetic, texture/channel metadata ops, live input
-query ops, and color output. Image files, generated noise textures, live webcam
-streams, microphone analyser channels, and user-selected video files can be
-loaded into `channel0..3` from the sidebar. URL-backed videos are supported when
-the remote server permits browser media/CORS access. User-selected audio files
-can also feed 512x2 waveform/spectrum channel textures. Image/noise channels are
-preserved in exported/shared project bundles; webcam, microphone, video, and
-audio channels save their metadata but reconnect through local browser
-permission or file selection. Feedback buffer passes can be assigned to
-`buffer0..3` from project files in the sidebar. For examples outside the browser
-compiler subset, use the native CLI to emit WGSL, then paste it into the WGSL
-panel:
+## The shader contract
 
-```sh
-./build/asm-shader-toy examples/basics/time_pulse.asm --emit-wgsl -
+A project file is ordinary WGSL containing one function:
+
+```wgsl
+fn shade(pixel: ShadyPixel) -> vec4<f32> {
+    return vec4<f32>(pixel.uv, 0.5 + 0.5 * sin(inputs.time), 1.0);
+}
 ```
 
-Useful app controls:
+Shady prepends [`runtime/prelude.wgsl`](runtime/prelude.wgsl) and appends
+[`runtime/entry.wgsl`](runtime/entry.wgsl). This deliberately small source composition
+step supplies the compute entry point and stable bindings; there is no custom language,
+assembler, transpiler, or hidden shader compiler. Coordinates use a bottom-left origin
+like Shadertoy. The authored file can use `inputs`, `channel_sample`, `channel_load`,
+`key_down`, `mouse_button_down`, `gamepad_button_down`, and `gamepad_axis` directly.
 
-- `Ctrl+P`: pause/resume shader time and frame stepping.
-- `Ctrl+R`: reset shader time, frame count, and feedback buffers.
-- `Escape`: quit.
+Pass `--channel0 image.png`, `--noise1 seed`, `--video2 clip.mp4`, or `--audio3 song.wav`
+for static channels. The desktop runner also accepts `--webcam0 /dev/video0` and
+`--mic1 default`. A feedback project supplies a shader with `--buffer0 buffer.wgsl`;
+buffer passes read the previous frame and the image pass reads the newly written frame.
 
-Plain keys remain visible to shaders through `key`.
+## Repository map
 
-## Channels
+The native program is intentionally boring C+. `arguments` owns command-line meaning,
+`channels` and `media` own pixels, `files` owns source composition and watching, `gpu`
+owns compute dispatch and feedback, `presentation` owns the SDL WebGPU surface,
+`live_media` owns streaming devices, and `app` only conducts the loop. The browser has
+the same conceptual split under `web/src`.
 
-Static images:
+The design and completion contract live in [`docs/goal.md`](docs/goal.md). Read
+[`docs/architecture.md`](docs/architecture.md) for the exact frame path,
+[`docs/shader-api.md`](docs/shader-api.md) for every shader-visible value, and
+[`docs/projects.md`](docs/projects.md) for channels, buffers, sharing, and export.
 
-```sh
-./build/asm-shader-toy examples/textures/multi_image_mix.asm \
-  --channel0 examples/assets/checker.png \
-  --channel1 examples/assets/bars.png
-```
-
-Streaming video through local `ffmpeg`/`ffprobe`:
-
-```sh
-./build/asm-shader-toy examples/video/poster_edges.asm \
-  --video0 examples/assets/video/big_buck_bunny_4m34s_640x360.mp4 \
-  --size 320x180 \
-  --scale 2
-```
-
-Webcam through local `ffmpeg`/V4L2:
-
-```sh
-./build/asm-shader-toy examples/webcam/webcam_channel.asm \
-  --webcam0 \
-  --size 320x240 \
-  --scale 2
-```
-
-Audio files and microphone channels:
-
-```sh
-./build/asm-shader-toy examples/audio/audio_scope.asm \
-  --audio0 examples/assets/audio/two_tone.wav \
-  --size 320x180 \
-  --scale 2
-
-./build/asm-shader-toy examples/microphone/mic_scope.asm \
-  --mic0 \
-  --size 320x180 \
-  --scale 2
-```
-
-Generated noise:
-
-```sh
-./build/asm-shader-toy examples/textures/noise_field.asm \
-  --noise0 42 \
-  --size gba \
-  --scale 4
-```
-
-## Headless
-
-```sh
-./build/asm-shader-toy examples/basics/plasma.asm --dry-run
-./build/asm-shader-toy examples/basics/plasma.asm --no-graphics --frames 10
-./build/asm-shader-toy examples/raymarch/pixelated_planet.asm \
-  --size gba \
-  --frames 90 \
-  --save-frame /tmp/pixel_planet.png
-./build/asm-shader-toy examples/raymarch/pixelated_planet.asm --measure-fps 120
-```
-
-## Language Snapshot
-
-Every pixel starts with fixed input registers:
-
-- `r0/r1`: pixel x/y
-- `r2`: shader time in seconds
-- `r3/r4`: render width/height
-- `r5..r9`: mouse position/button/click inputs
-- `r10`: frame
-- `r11`: time delta
-- `r12..r15`: local date inputs
-
-Built-in names like `px`, `py`, `time`, `width`, `height`, and `mouse_down`
-can be used instead of raw input registers. Scratch registers start at `r16`.
-Colors are written with `out` for normalized `0..1` channels or `out8` for byte
-`0..255` channels.
-
-Texture/channel instructions:
-
-```asm
-tex dr, dg, db, da, channel, u, v
-texel dr, dg, db, da, channel, x, y
-chdim dw, dh, channel
-chtime dst, channel
-chsrate dst, channel
-```
-
-Live input queries:
-
-```asm
-key dst, scancode
-mbtn dst, button
-mwheel dx, dy
-gbtn dst, button
-gaxis dst, axis
-```
-
-Multi-file programs use `.include` with paths relative to the including file.
-Includes are once-by-default after canonical path resolution:
-
-```asm
-.include "common/math.inc"
-.include <std/screen.inc>
-```
-
-`std/screen.inc` defines conventional scratch aliases such as `uv_x`, `uv_y`,
-`pos_x`, `pos_y`, `color_r`, `tex0_r`, `tex1_r`, and `tmp0`.
-
-See [examples/README.md](examples/README.md), [docs/assembly.md](docs/assembly.md),
-[docs/inputs.md](docs/inputs.md), [docs/performance.md](docs/performance.md), and
-[docs/scope.md](docs/scope.md).
-
-## Size Presets
-
-`--scale` and `--dimscale` are aliases. The default render uses scale `4`;
-passing `--size` uses scale `1` unless you also pass `--scale`.
-
-`--size` accepts `WxH` or a preset name:
-
-- `gb`, `gameboy`, `gbc`, `gameboycolor`: `160x144`
-- `gba`: `240x160`
-- `nes`: `256x240`
-- `snes`: `256x224`
-- `genesis`, `megadrive`: `320x224`
-- `sms`, `mastersystem`: `256x192`
-- `n64`, `ps1`, `psx`, `spelunky`: `320x240`
-- `ds`, `nds`: `256x192`
-- `psp`: `480x272`
-
-The interpreter always renders the intermediate texture size; SDL scales that
-texture into the window.
+Shady is descended from `asm-shader-toy`; its native and browser harnesses were the
+useful prototype. Shady removes the fake assembly language and keeps direct WGSL as the
+single authored format. It is MIT licensed.

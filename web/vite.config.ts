@@ -22,9 +22,9 @@ export default defineConfig({
   },
   plugins: [
     {
-      name: "asm-shader-toy-example-reload",
+      name: "shady-example-reload",
       configureServer(server) {
-        server.watcher.add(resolve(examplesDir, "**/*.{asm,inc}"));
+        server.watcher.add(resolve(examplesDir, "**/*.wgsl"));
         server.watcher.on("change", (file) => {
           if (file.startsWith(examplesDir)) {
             server.ws.send({ type: "full-reload" });

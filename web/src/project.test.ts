@@ -1,16 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { normalizeProject, type ProjectBundle } from "./project";
+import { normalizeProject } from "./project";
+
+const shader = "fn shade(pixel: ShadyPixel) -> vec4<f32> { return vec4<f32>(pixel.uv, 0.0, 1.0); }";
 
 describe("project bundles", () => {
-  test("normalizes missing channel settings for old bundles", () => {
+  test("normalizes missing channels and buffers", () => {
     const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4
-      } as ProjectBundle["settings"]
+      files: [{ path: "main.wgsl", content: shader }],
+      settings: { main: "main.wgsl", size: "gba", scale: 4, channels: [] }
     });
 
     expect(project.settings.channels).toHaveLength(4);
@@ -18,157 +15,52 @@ describe("project bundles", () => {
     expect(project.settings.buffers).toEqual([null, null, null, null]);
   });
 
-  test("preserves browser feedback buffer slots", () => {
+  test("preserves direct WGSL feedback passes", () => {
     const project = normalizeProject({
       files: [
-        { path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" },
-        { path: "buffer.asm", content: "out 1.0, 1.0, 1.0, 1.0\n" }
+        { path: "main.wgsl", content: shader },
+        { path: "buffer.wgsl", content: shader }
       ],
       settings: {
-        main: "main.asm",
-        wgsl: "",
+        main: "main.wgsl",
         size: "gba",
         scale: 4,
         channels: [],
-        buffers: [{ file: "buffer.asm", wgsl: "compiled" }]
+        buffers: [{ file: "buffer.wgsl" }]
       }
     });
 
     expect(project.settings.buffers).toHaveLength(4);
-    expect(project.settings.buffers?.[0]).toEqual({ file: "buffer.asm", wgsl: "compiled" });
+    expect(project.settings.buffers?.[0]).toEqual({ file: "buffer.wgsl" });
     expect(project.settings.buffers?.[1]).toBeNull();
   });
 
-  test("preserves compact generated noise channels", () => {
+  test.each([
+    { kind: "noise" as const, name: "noise:clouds", width: 256, height: 256, seed: "clouds" },
+    { kind: "webcam" as const, name: "webcam", width: 640, height: 480 },
+    { kind: "microphone" as const, name: "microphone", width: 512, height: 2, sampleRate: 48000 },
+    { kind: "video" as const, name: "clip.mp4", width: 640, height: 360 },
+    { kind: "audio" as const, name: "loop.wav", width: 512, height: 2, sampleRate: 44100 }
+  ])("preserves $kind channel metadata", (channel) => {
     const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [{ kind: "noise", name: "noise:clouds", width: 256, height: 256, seed: "clouds" }]
-      }
+      files: [{ path: "main.wgsl", content: shader }],
+      settings: { main: "main.wgsl", size: "gba", scale: 4, channels: [channel] }
     });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "noise",
-      name: "noise:clouds",
-      width: 256,
-      height: 256,
-      seed: "clouds"
-    });
-    expect(project.settings.channels[0].imageDataUrl).toBeUndefined();
+    expect(project.settings.channels[0]).toMatchObject(channel);
   });
 
-  test("preserves browser webcam channel metadata without serializing streams", () => {
-    const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [{ kind: "webcam", name: "webcam", width: 640, height: 480 }]
-      }
-    });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "webcam",
-      name: "webcam",
-      width: 640,
-      height: 480
-    });
-  });
-
-  test("preserves browser microphone channel metadata without serializing streams", () => {
-    const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [{ kind: "microphone", name: "microphone", width: 512, height: 2, sampleRate: 48000 }]
-      }
-    });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "microphone",
-      name: "microphone",
-      width: 512,
-      height: 2,
-      sampleRate: 48000
-    });
-  });
-
-  test("preserves browser video channel metadata without serializing media blobs", () => {
-    const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [{ kind: "video", name: "clip.mp4", width: 640, height: 360 }]
-      }
-    });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "video",
-      name: "clip.mp4",
-      width: 640,
-      height: 360
-    });
-  });
-
-  test("preserves URL-backed browser video metadata", () => {
-    const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [
-          {
-            kind: "video",
-            name: "https://example.com/clip.mp4",
-            width: 640,
-            height: 360,
-            sourceUrl: "https://example.com/clip.mp4"
-          }
-        ]
-      }
-    });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "video",
-      name: "https://example.com/clip.mp4",
+  test("preserves URL-backed media metadata", () => {
+    const channel = {
+      kind: "video" as const,
+      name: "remote clip",
       width: 640,
       height: 360,
       sourceUrl: "https://example.com/clip.mp4"
-    });
-  });
-
-  test("preserves browser audio channel metadata without serializing media blobs", () => {
+    };
     const project = normalizeProject({
-      files: [{ path: "main.asm", content: "out 0.0, 0.0, 0.0, 1.0\n" }],
-      settings: {
-        main: "main.asm",
-        wgsl: "",
-        size: "gba",
-        scale: 4,
-        channels: [{ kind: "audio", name: "loop.wav", width: 512, height: 2, sampleRate: 44100 }]
-      }
+      files: [{ path: "main.wgsl", content: shader }],
+      settings: { main: "main.wgsl", size: "gba", scale: 4, channels: [channel] }
     });
-
-    expect(project.settings.channels[0]).toMatchObject({
-      kind: "audio",
-      name: "loop.wav",
-      width: 512,
-      height: 2,
-      sampleRate: 44100
-    });
+    expect(project.settings.channels[0]).toMatchObject(channel);
   });
 });
