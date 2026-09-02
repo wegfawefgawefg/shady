@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libsdl2-dev libsdl2-image-dev
       - run: cmake --preset dev
       - run: cmake --build --preset dev --parallel 2
       - run: ctest --test-dir build-shady --output-on-failure
