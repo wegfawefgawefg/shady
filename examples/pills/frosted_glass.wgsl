@@ -21,9 +21,13 @@ fn rotate(point: vec2<f32>, angle: f32) -> vec2<f32> {
     );
 }
 
-fn capsule_distance(point: vec2<f32>, half_segment: f32, radius: f32) -> f32 {
-    let nearest = vec2<f32>(clamp(point.x, -half_segment, half_segment), 0.0);
-    return length(point - nearest) - radius;
+fn projected_capsule_distance(
+    point: vec2<f32>, half_segment: f32, near_radius: f32, far_radius: f32,
+) -> f32 {
+    let along = clamp(point.x, -half_segment, half_segment);
+    let depth = (along + half_segment) / (2.0 * half_segment);
+    let radius = mix(near_radius, far_radius, depth);
+    return length(point - vec2<f32>(along, 0.0)) - radius;
 }
 
 fn mouse_point(value: vec2<f32>, resolution: vec2<f32>) -> vec2<f32> {
@@ -48,30 +52,34 @@ fn shade(pixel: ShadyPixel) -> vec4<f32> {
     let angle = select(-0.28, atan2(drag.y, drag.x), has_direction);
 
     let local = rotate(pixel.centered - center, -angle);
-    let distance = capsule_distance(local, 0.245, 0.105);
-    let shadow_local = rotate(pixel.centered - center - vec2<f32>(0.025, -0.045), -angle);
-    let shadow_distance = capsule_distance(shadow_local, 0.26, 0.13);
 
-    let soft_shadow = smoothstep(0.16, -0.035, shadow_distance);
-    let outer_frost = smoothstep(0.105, -0.018, distance);
-    let glass = smoothstep(0.025, -0.018, distance);
-    let dense_core = smoothstep(-0.005, -0.085, distance);
-    let inner_edge = smoothstep(0.018, -0.018, distance) -
-        smoothstep(-0.028, -0.082, distance);
+    // Project a long pill tilted 45 degrees away from the glass.  Its far end
+    // points along +x: it is smaller, deeper in the glaze, and less distinct.
+    let tilt_projection = 0.7071;
+    let half_segment = 0.29 * tilt_projection;
+    let along = clamp(local.x, -half_segment, half_segment);
+    let depth = (along + half_segment) / (2.0 * half_segment);
+    let distance = projected_capsule_distance(local, half_segment, 0.115, 0.082);
+    let haze_local = local - vec2<f32>(mix(0.012, 0.050, depth), -0.030);
+    let haze_distance = projected_capsule_distance(
+        haze_local, half_segment + 0.018, 0.135, 0.145);
 
-    let edge_direction = normalize(vec2<f32>(local.x * 0.35, local.y) + vec2<f32>(0.0001));
-    let refracted_point = pixel.centered + edge_direction * glass * 0.045;
+    // The object is below the glass: broad diffusion first, then a softened
+    // silhouette.  Every layer absorbs light, so the edge never becomes a glow.
+    let deep_haze = smoothstep(mix(0.135, 0.230, depth), -0.045, haze_distance);
+    let near_haze = smoothstep(mix(0.065, 0.125, depth), -0.035, distance);
+    let body = smoothstep(mix(0.012, 0.032, depth), mix(-0.025, -0.016, depth), distance);
+    let visibility = mix(1.08, 0.58, depth);
+
     var color = background(pixel.centered, pixel.coord);
-    color -= vec3<f32>(0.19) * soft_shadow * (1.0 - glass * 0.72);
-
-    let refracted = background(refracted_point, pixel.coord + edge_direction * 9.0);
     let cloudy = value_noise(local * vec2<f32>(7.0, 13.0) + vec2<f32>(inputs.time * 0.04, 0.0));
-    let frosted = refracted * (0.72 + cloudy * 0.13) - vec3<f32>(0.13);
-    color = mix(color, frosted, glass * 0.82);
-    color -= vec3<f32>(0.23) * dense_core;
-    color += vec3<f32>(0.105, 0.115, 0.108) * inner_edge *
-        smoothstep(-0.75, 0.65, edge_direction.y);
-    color = mix(color, color * vec3<f32>(0.86, 0.89, 0.87), outer_frost * 0.18);
+    color -= vec3<f32>(0.075, 0.077, 0.074) * deep_haze;
+    color -= vec3<f32>(0.115, 0.120, 0.116) * near_haze * visibility;
+    color -= vec3<f32>(0.390, 0.398, 0.385) * body * visibility;
+
+    // Uneven milkiness makes the silhouette feel embedded in textured glass,
+    // rather than like a crisp shape with a blur filter around it.
+    color += vec3<f32>(0.018) * (cloudy - 0.5) * near_haze;
 
     let vignette = smoothstep(1.45, 0.32, length(pixel.centered * vec2<f32>(0.7, 1.0)));
     color *= 0.92 + 0.08 * vignette;

@@ -57,14 +57,25 @@ std::optional<wgpu::Surface> make_surface(wgpu::Instance instance, SDL_Window* w
 }
 
 wgpu::TextureFormat surface_format(wgpu::Surface surface, wgpu::Adapter adapter) {
-    const auto preferred = surface.getPreferredFormat(adapter);
-    if (preferred != wgpu::TextureFormat::Undefined) return preferred;
     wgpu::SurfaceCapabilities capabilities{};
     surface.getCapabilities(adapter, &capabilities);
-    const auto format = capabilities.formatCount > 0 ? capabilities.formats[0]
-                                                     : wgpu::TextureFormat::BGRA8Unorm;
+    wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
+    for (std::size_t index = 0; index < capabilities.formatCount; ++index) {
+        const auto candidate = capabilities.formats[index];
+        if (candidate == wgpu::TextureFormat::BGRA8Unorm ||
+            candidate == wgpu::TextureFormat::RGBA8Unorm) {
+            format = candidate;
+            break;
+        }
+    }
+    if (format == wgpu::TextureFormat::Undefined && capabilities.formatCount > 0) {
+        format = capabilities.formats[0];
+    }
     capabilities.freeMembers();
-    return format;
+    if (format != wgpu::TextureFormat::Undefined) return format;
+    const auto preferred = surface.getPreferredFormat(adapter);
+    if (preferred != wgpu::TextureFormat::Undefined) return preferred;
+    return wgpu::TextureFormat::BGRA8Unorm;
 }
 
 } // namespace
@@ -108,6 +119,7 @@ bool Presentation::init(GpuContext& context, SDL_Window* window, int width, int 
     const auto shader = shader_module(context.device, present_source);
     wgpu::ColorTargetState target{};
     target.format = format;
+    target.writeMask = wgpu::ColorWriteMask::All;
     wgpu::FragmentState fragment{};
     fragment.module = shader;
     fragment.entryPoint = "fs";
@@ -120,6 +132,7 @@ bool Presentation::init(GpuContext& context, SDL_Window* window, int width, int 
     pipeline_descriptor.fragment = &fragment;
     pipeline_descriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pipeline_descriptor.multisample.count = 1;
+    pipeline_descriptor.multisample.mask = 0xffffffffU;
     pipeline_ = context.device.createRenderPipeline(pipeline_descriptor);
     wgpu::BufferDescriptor buffer_descriptor{};
     buffer_descriptor.size = 16;
@@ -153,6 +166,7 @@ bool Presentation::present(wgpu::TextureView source) {
     attachment.view = surface_view;
     attachment.loadOp = wgpu::LoadOp::Clear;
     attachment.storeOp = wgpu::StoreOp::Store;
+    attachment.clearValue = wgpu::Color{0.835, 0.855, 0.84, 1.0};
     wgpu::RenderPassDescriptor pass_descriptor{};
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &attachment;
